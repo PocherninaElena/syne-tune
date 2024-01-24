@@ -19,44 +19,59 @@ import logging
 import subprocess
 import time
 
+
 _num_gpus = None
 
 
-def get_num_gpus() -> int:
+def _get_num_gpus(cmd: str) -> int:
     """
     Returns the number of available GPUs based on configuration parameters and available hardware GPU devices.
-    Gpus are detected by running "nvidia-smi --list-gpus" as a subprocess.
+    Gpus are detected by running a provided command as a subprocess.
     :return: (int) number of GPUs
     """
+    try:
+        with open("std.out", "w") as stdout:
+            proc = subprocess.Popen(cmd, shell=True, stdout=stdout)
+        max_trials = 0
+        while proc.poll() is None and max_trials < 100:
+            time.sleep(0.1)
+            max_trials += 1
+
+        if proc.poll() is None:
+            raise ValueError(f"{cmd} timed out after 10 secs.")
+
+        if proc.poll() != 0:
+            # In cases when command fails, no GPU is available.
+            return 0
+        else:
+            # In cases of the command success, we read the number of GPU available
+            # communicated by the provided command.
+            with open("std.out", "r") as stdout:
+                num_gpus = len(stdout.readlines())
+            return num_gpus
+
+    except (OSError, FileNotFoundError):
+        logging.info(
+            f"Error launching {cmd}, no GPU could be detected."
+        )
+        return 0
+        
+
+def get_num_gpus() -> int:
     global _num_gpus
     if _num_gpus is None:
-        try:
-            cmd = "nvidia-smi --list-gpus"
-            with open("std.out", "w") as stdout:
-                proc = subprocess.Popen(cmd.split(" "), shell=False, stdout=stdout)
-            max_trials = 0
-            while proc.poll() is None and max_trials < 100:
-                time.sleep(0.1)
-                max_trials += 1
+        num_gpus = _get_num_gpus("nvidia-smi --list-gpus")
+        print(num_gpus)
+        if num_gpus == 0:
+            print(
+                    "Error launching /usr/bin/nvidia-smi, no GPU could be detected. Trying rocm-smi..."
+                )
+            num_gpus = _get_num_gpus("rocm-smi --showid | grep 'GPU ID'")
+            if num_gpus == 0:
+                print(
+                        "Error launching rocm-smi, no GPU could be detected."
+                    )
 
-            if proc.poll() is None:
-                raise ValueError("nvidia-smi timed out after 10 secs.")
+        _num_gpus = num_gpus
 
-            if proc.poll() != 0:
-                # In cases when nvidia-smi fails, no GPU is available.
-                return 0
-            else:
-                # In cases when nvidia-smi success, we read the number of GPU available
-                # communicated by nvidia-smi.
-                with open("std.out", "r") as stdout:
-                    _num_gpus = len(stdout.readlines())
-                return _num_gpus
-
-        except (OSError, FileNotFoundError):
-            logging.info(
-                "Error launching /usr/bin/nvidia-smi, no GPU could be detected."
-            )
-            _num_gpus = 0
-            return 0
-    else:
-        return _num_gpus
+    return _num_gpus
